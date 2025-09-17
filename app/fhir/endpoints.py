@@ -55,8 +55,11 @@ async def valueset_expand(
                         break
             if len(contains) >= count:
                 break
+    from datetime import datetime, timezone
+
     vs.expansion = {
         "identifier": request.state.request_id,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "total": len(contains),
         "contains": contains[:count],
     }
