@@ -10,8 +10,9 @@ from .middleware import (
     AuditMiddleware,
     RateLimitMiddleware,
     RequestContextMiddleware,
-    cors_middleware,
+    cors_options,
 )
+from starlette.middleware.cors import CORSMiddleware
 from .security import create_access_token, get_current_user
 from .fhir.endpoints import router as fhir_router
 
@@ -26,7 +27,7 @@ app = FastAPI(
 app.add_middleware(RequestContextMiddleware)
 app.add_middleware(RateLimitMiddleware)
 app.add_middleware(AuditMiddleware)
-app.add_middleware(cors_middleware())
+app.add_middleware(CORSMiddleware, **cors_options())
 
 app.include_router(fhir_router)
 

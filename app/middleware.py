@@ -3,21 +3,21 @@ import uuid
 from typing import Callable
 
 from fastapi import Request
-from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.cors import CORSMiddleware
 
 from .config import get_settings
 
 
-def cors_middleware():
+def cors_options() -> dict:
     settings = get_settings()
     origins = [o.strip() for o in settings.allowed_origins.split(",")]
-    return CORSMiddleware(
-        allow_origins=origins,
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    return {
+        "allow_origins": origins,
+        "allow_credentials": True,
+        "allow_methods": ["*"],
+        "allow_headers": ["*"],
+    }
 
 
 class RequestContextMiddleware(BaseHTTPMiddleware):

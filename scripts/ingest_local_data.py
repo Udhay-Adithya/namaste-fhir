@@ -1,7 +1,7 @@
 import asyncio
 from pathlib import Path
 
-from sqlalchemy import insert
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import AuditLog, CodeSystem, Base
@@ -45,7 +45,7 @@ async def ingest():
                 continue
             concepts = load_namaste_codes(path)
             cs = build_codesystem(cs_id, url, title, concepts)
-            await session.execute(
+            stmt = (
                 insert(CodeSystem)
                 .values(
                     cs_id=cs_id,
@@ -56,8 +56,9 @@ async def ingest():
                     status=cs.status,
                     content=cs.dict(exclude_none=True),
                 )
-                .prefix_with("ON CONFLICT (cs_id) DO NOTHING")
+                .on_conflict_do_nothing(index_elements=[CodeSystem.cs_id])
             )
+            await session.execute(stmt)
         await session.commit()
 
 
