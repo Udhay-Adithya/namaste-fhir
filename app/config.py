@@ -24,10 +24,19 @@ class Settings(BaseSettings):
         "postgresql+asyncpg://postgres:postgres@localhost:5432/namaste_fhir"
     )
     elasticsearch_url: str = "http://localhost:9200"
+    search_index_name: str = "namaste-concepts"
     redis_url: str = "redis://localhost:6379/0"
 
-    who_api_base: str = "https://id.who.int/icd/release/11/2024-01"
+    # ICD-API config (v2.5.0 OAS)
+    who_api_base: str = "https://id.who.int/icd/release/11/2025-01"
+    who_api_version: str = "v2"
+    who_language: str = "en"
+    who_release_id: str = "2025-01"
     who_api_token: str | None = None
+    who_token_url: str | None = None
+    who_client_id: str | None = None
+    who_client_secret: str | None = None
+    who_scope: str = "icdapi_access"
 
 
 @lru_cache

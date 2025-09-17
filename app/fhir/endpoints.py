@@ -10,6 +10,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..db.session import get_db
 from ..db.models import CodeSystem as CSModel, Mapping as MappingModel
 from ..security import get_current_user
+from ..services.search import autocomplete as es_autocomplete
+from ..services.icd11 import fetch_icd11_concept, search_icd11, autocode_icd11
+from ..config import get_settings
 
 
 router = APIRouter(prefix="/fhir", tags=["FHIR"])
@@ -37,24 +40,39 @@ async def valueset_expand(
 ):
     vs = ValueSet.construct(id="expand-result", url=url, status="active")
     contains = []
-    # TODO: integrate Elasticsearch; for now return first matches from DB
     if filter:
-        res = await db.execute(select(CSModel))
-        for cs in res.scalars():
-            for c in (cs.content or {}).get("concept", []):
-                disp = c.get("display", "")
-                if filter.lower() in disp.lower():
-                    contains.append(
-                        {
-                            "system": cs.content.get("url"),
-                            "code": c.get("code"),
-                            "display": disp,
-                        }
-                    )
-                    if len(contains) >= count:
-                        break
-            if len(contains) >= count:
-                break
+        # Try Elasticsearch first
+        try:
+            settings = get_settings()
+            hits = es_autocomplete(settings.search_index_name, filter, size=count)
+            for h in hits:
+                contains.append(
+                    {
+                        "system": h.get("system"),
+                        "code": h.get("code"),
+                        "display": h.get("display"),
+                    }
+                )
+        except Exception:
+            hits = []
+        # Fallback to DB LIKE search if ES empty
+        if not contains:
+            res = await db.execute(select(CSModel))
+            for cs in res.scalars():
+                for c in (cs.content or {}).get("concept", []):
+                    disp = c.get("display", "")
+                    if filter.lower() in disp.lower():
+                        contains.append(
+                            {
+                                "system": cs.content.get("url"),
+                                "code": c.get("code"),
+                                "display": disp,
+                            }
+                        )
+                        if len(contains) >= count:
+                            break
+                if len(contains) >= count:
+                    break
     from datetime import datetime, timezone
 
     vs.expansion = {
@@ -108,31 +126,111 @@ async def conceptmap_translate(
             MappingModel.source_code == code,
         )
     )
-    mapping = res.scalar_one_or_none()
-    if not mapping:
+    mappings = list(res.scalars())
+    if not mappings:
+        # Try ICD-API autocode (TM2 first, then MMS) using the source display
+        src_display = None
+        res_cs = await db.execute(select(CSModel))
+        for cs in res_cs.scalars():
+            if cs.content and cs.content.get("url") == system:
+                for c in (cs.content or {}).get("concept", []):
+                    if c.get("code") == code:
+                        src_display = c.get("display")
+                        break
+        best_effort = None
+        search_system = None
+        if src_display:
+            try:
+                ac = autocode_icd11(src_display, linearization="tm2")
+                if not ac or not ac.get("theCode"):
+                    ac = autocode_icd11(src_display, linearization="mms")
+                    if ac and ac.get("theCode"):
+                        search_system = "http://id.who.int/icd/release/11/mms"
+                else:
+                    search_system = "http://id.who.int/icd/release/11/tm2"
+                if ac and ac.get("theCode"):
+                    best_effort = ac
+            except Exception:
+                best_effort = None
+        if best_effort:
+            out = Parameters.construct(
+                parameter=[
+                    {"name": "result", "valueBoolean": True},
+                    {
+                        "name": "match",
+                        "part": [
+                            {"name": "equivalence", "valueCode": "relatedto"},
+                            {
+                                "name": "concept",
+                                "valueCoding": {
+                                    "system": search_system
+                                    or "http://id.who.int/icd/release/11/mms",
+                                    "code": best_effort.get("theCode")
+                                    or best_effort.get("code")
+                                    or best_effort.get("id")
+                                    or "",
+                                    "display": (
+                                        best_effort.get("matchingText")
+                                        or best_effort.get("label")
+                                        or best_effort.get("title")
+                                        or (best_effort.get("title", {}) or {}).get(
+                                            "@value"
+                                        )
+                                        or best_effort.get("theCode")
+                                    ),
+                                },
+                            },
+                        ],
+                    },
+                    {
+                        "name": "message",
+                        "valueString": "Returned ICD-11 best-effort match via WHO ICD-API autocode.",
+                    },
+                ]
+            )
+            return out.dict(exclude_none=True)
         out = Parameters.construct(
             parameter=[{"name": "result", "valueBoolean": False}]
         )
         return out.dict(exclude_none=True)
-    out = Parameters.construct(
-        parameter=[
-            {"name": "result", "valueBoolean": True},
+
+    # Prefer ICD-11 targets if present; otherwise include ICD-10
+    def is_icd11(sys: str | None) -> bool:
+        return bool(sys and sys.startswith("http://id.who.int/icd/release/11/"))
+
+    ordered = sorted(mappings, key=lambda m: 0 if is_icd11(m.target_system) else 1)
+    parts = []
+    for m in ordered:
+        parts.append(
             {
                 "name": "match",
                 "part": [
-                    {"name": "equivalence", "valueCode": mapping.equivalence},
+                    {"name": "equivalence", "valueCode": m.equivalence},
                     {
                         "name": "concept",
                         "valueCoding": {
-                            "system": mapping.target_system,
-                            "code": mapping.target_code,
-                            "display": mapping.display or mapping.target_code,
+                            "system": m.target_system,
+                            "code": m.target_code,
+                            "display": m.display or m.target_code,
                         },
                     },
                 ],
-            },
-        ]
-    )
+            }
+        )
+
+    parameters = [{"name": "result", "valueBoolean": True}] + parts
+
+    # Optional: if only ICD-10 is found, we could attempt ICD-11 fetch/bridge (placeholder)
+    if parameters and not any(is_icd11(m.target_system) for m in ordered):
+        # Example of including an advisory message
+        parameters.append(
+            {
+                "name": "message",
+                "valueString": "ICD-11 mapping not found; returning ICD-10 related mapping.",
+            }
+        )
+
+    out = Parameters.construct(parameter=parameters)
     return out.dict(exclude_none=True)
 
 
