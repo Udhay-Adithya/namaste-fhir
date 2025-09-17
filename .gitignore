@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python/
+env/
+venv/
+.venv/
+build/
+develop-eggs/
+dist/
+eggs/
+*.egg-info/
+.coverage
+.tox/
+.mypy_cache/
+.pytest_cache/
+htmlcov/
+
+# Editor/IDE specific
+.idea/
+.vscode/
+*.swp
+*.swo
+*.swn
+*.bak
+*.orig
+*.rej
+
+# Operating System
+.DS_Store
+Thumbs.db
+
+# FastAPI/Starlette specific
+*.sqlite3
+*.db
+.env
