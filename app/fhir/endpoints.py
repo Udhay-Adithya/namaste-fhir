@@ -11,11 +11,151 @@ from ..db.session import get_db
 from ..db.models import CodeSystem as CSModel, Mapping as MappingModel
 from ..security import get_current_user
 from ..services.search import autocomplete as es_autocomplete
-from ..services.icd11 import fetch_icd11_concept, search_icd11, autocode_icd11
+from ..services.icd11 import (
+    fetch_icd11_concept,
+    search_icd11,
+    autocode_icd11,
+)
 from ..config import get_settings
 
 
 router = APIRouter(prefix="/fhir", tags=["FHIR"])
+
+
+@router.get("/CodeSystem/$lookup", response_model=dict)
+async def codesystem_lookup(
+    system: str = Query(..., description="Code system URI"),
+    code: str = Query(..., description="Code to lookup"),
+    user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    if system.startswith("http://id.who.int/icd/release/11/"):
+        linearization = "mms"
+        if system.endswith("/tm2") or "/tm2" in system:
+            linearization = "tm2"
+        from ..services.icd11 import codeinfo_icd11
+
+        info = codeinfo_icd11(code, linearization=linearization)
+        if info and (info.get("code") or info.get("simplifiedCode")):
+            title = (
+                (info.get("title") or {}).get("@value")
+                if isinstance(info.get("title"), dict)
+                else info.get("title")
+            )
+            display = title
+            if not display:
+                try:
+                    results = search_icd11(code, linearization=linearization, size=1)
+                except Exception:
+                    results = []
+                if results:
+                    first = results[0]
+                    display = (
+                        first.get("title")
+                        or (first.get("title", {}) or {}).get("@value")
+                        or first.get("label")
+                        or first.get("matchingText")
+                    )
+            display = display or code
+            out = Parameters.construct(
+                parameter=[
+                    {"name": "name", "valueString": system},
+                    {
+                        "name": "version",
+                        "valueString": system.split("/release/11/")[-1],
+                    },
+                    {"name": "display", "valueString": display},
+                ]
+            )
+            return out.dict(exclude_none=True)
+        raise HTTPException(status_code=404, detail="Code not found in ICD-11")
+
+    res = await db.execute(select(CSModel).where(CSModel.url == system))
+    cs = res.scalar_one_or_none()
+    if not cs:
+        raise HTTPException(status_code=404, detail="CodeSystem not found")
+    for c in (cs.content or {}).get("concept", []):
+        if c.get("code") == code:
+            display = c.get("display") or code
+            out = Parameters.construct(
+                parameter=[
+                    {"name": "name", "valueString": cs.content.get("url")},
+                    {"name": "version", "valueString": cs.content.get("version")},
+                    {"name": "display", "valueString": display},
+                ]
+            )
+            return out.dict(exclude_none=True)
+    raise HTTPException(status_code=404, detail="Code not found")
+
+
+@router.get("/CodeSystem/$validate-code", response_model=dict)
+async def validate_code(
+    system: str = Query(...),
+    code: str = Query(...),
+    display: str | None = Query(None),
+    user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    if system.startswith("http://id.who.int/icd/release/11/"):
+        # Prefer codeinfo for exact code lookup
+        linearization = "mms"
+        if system.endswith("/tm2") or "/tm2" in system:
+            linearization = "tm2"
+        from ..services.icd11 import codeinfo_icd11
+
+        info = codeinfo_icd11(code, linearization=linearization)
+        if info and (info.get("code") or info.get("simplifiedCode")):
+            title = (
+                (info.get("title") or {}).get("@value")
+                if isinstance(info.get("title"), dict)
+                else info.get("title")
+            )
+            out = Parameters.construct(
+                parameter=[
+                    {"name": "result", "valueBoolean": True},
+                    {"name": "system", "valueUri": system},
+                    {"name": "code", "valueCode": code},
+                    *([{"name": "display", "valueString": title}] if title else []),
+                ]
+            )
+            return out.dict(exclude_none=True)
+        out = Parameters.construct(
+            parameter=[
+                {"name": "result", "valueBoolean": False},
+                {"name": "message", "valueString": "Code not found in ICD-11"},
+            ]
+        )
+        return out.dict(exclude_none=True)
+
+    # Local CodeSystem validation
+    res = await db.execute(select(CSModel).where(CSModel.url == system))
+    cs = res.scalar_one_or_none()
+    if not cs:
+        out = Parameters.construct(
+            parameter=[
+                {"name": "result", "valueBoolean": False},
+                {"name": "message", "valueString": "CodeSystem not found"},
+            ]
+        )
+        return out.dict(exclude_none=True)
+    for c in (cs.content or {}).get("concept", []):
+        if c.get("code") == code:
+            out = Parameters.construct(
+                parameter=[
+                    {"name": "result", "valueBoolean": True},
+                    {"name": "system", "valueUri": system},
+                    {"name": "code", "valueCode": code},
+                    {"name": "display", "valueString": c.get("display") or code},
+                ]
+            )
+            return out.dict(exclude_none=True)
+    out = Parameters.construct(
+        parameter=[
+            {"name": "result", "valueBoolean": False},
+            {"name": "message", "valueString": "Code not found"},
+        ]
+    )
+    return out.dict(exclude_none=True)
 
 
 @router.get("/CodeSystem/{cs_id}", response_model=dict)
@@ -180,6 +320,23 @@ async def conceptmap_translate(
                                     ),
                                 },
                             },
+                            *(
+                                [
+                                    {
+                                        "name": "score",
+                                        "valueDecimal": float(
+                                            best_effort.get("matchScore")
+                                        ),
+                                    }
+                                ]
+                                if isinstance(
+                                    best_effort.get("matchScore"), (int, float, str)
+                                )
+                                and str(best_effort.get("matchScore"))
+                                .replace(".", "", 1)
+                                .isdigit()
+                                else []
+                            ),
                         ],
                     },
                     {
