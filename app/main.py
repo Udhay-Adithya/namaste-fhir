@@ -40,12 +40,18 @@ async def healthz():
 @app.post("/auth/token")
 async def auth_token(form_data: OAuth2PasswordRequestForm = Depends()):
     sub = form_data.username or "anonymous"
+    expires_minutes = get_settings().access_token_expire_minutes
+    expires_delta = timedelta(minutes=expires_minutes)
     token = create_access_token(
         subject=sub,
         scopes=form_data.scopes,
-        expires_delta=timedelta(minutes=get_settings().access_token_expire_minutes),
+        expires_delta=expires_delta,
     )
-    return {"access_token": token, "token_type": "bearer"}
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "expires_in": int(expires_delta.total_seconds()),
+    }
 
 
 @app.get("/me")
