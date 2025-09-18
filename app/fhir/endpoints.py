@@ -232,30 +232,20 @@ async def conceptmap_translate(
         parameters = Parameters(**params)
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-    url = next(
-        (
-            p.valueUri
-            for p in parameters.parameter
-            if p.name == "url" and getattr(p, "valueUri", None)
-        ),
-        None,
-    )
-    code = next(
-        (
-            p.valueCode
-            for p in parameters.parameter
-            if p.name == "code" and getattr(p, "valueCode", None)
-        ),
-        None,
-    )
-    system = next(
-        (
-            p.valueUri
-            for p in parameters.parameter
-            if p.name == "system" and getattr(p, "valueUri", None)
-        ),
-        None,
-    )
+
+    def _extract_param(name: str) -> str | None:
+        for p in parameters.parameter or []:
+            if p.name != name:
+                continue
+            for attr in ("valueUri", "valueCode", "valueString", "valueBoolean"):
+                v = getattr(p, attr, None)
+                if v is not None:
+                    return str(v)
+        return None
+
+    url = _extract_param("url")
+    code = _extract_param("code")
+    system = _extract_param("system")
     if not (url and code and system):
         raise HTTPException(
             status_code=400, detail="Missing url, code, or system parameter"
