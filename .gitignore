@@ -36,3 +36,6 @@ Thumbs.db
 *.sqlite3
 *.db
 .env
+
+# Java compiled files
+*.class
